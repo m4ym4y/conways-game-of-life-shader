@@ -7,6 +7,7 @@ function createTexture (gl, sizeX, sizeY) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
 
+  console.log('making texture size', sizeX, sizeY)
   gl.texImage2D(
     gl.TEXTURE_2D,
     0,
@@ -35,7 +36,7 @@ const fragment_shader = `
   uniform sampler2D state;
 
   int get(int x, int y) {
-    return int(texture2D(state, (gl_FragCoord.xy + vec2(x, y))).r > 0.5 ? 1 : 0);
+    return int(texture2D(state, (gl_FragCoord.xy + vec2(x, y)) / 1024.0).r);
   }
 
   void main() {
@@ -54,7 +55,8 @@ const fragment_shader = `
       float current = float(get(0, 0));
       gl_FragColor = vec4(current, current, current, 1.0);
     } else {
-      gl_FragColor = vec4(sum > 4 ? 1.0 : 0.0, sum < 2 ? 1.0 : 0.0, sum == 8 ? 1.0 : 0.0, 1.0);
+      gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+      // gl_FragColor = vec4(sum > 4 ? 1.0 : 0.0, sum < 2 ? 1.0 : 0.0, sum == 8 ? 1.0 : 0.0, 1.0);
     }
   }
 `
@@ -80,17 +82,6 @@ function createShader (gl, source, type) {
   return shader
 }
 
-/*
-const components = 3
-const verts = [
-  1.0, 1.0, 0,
-  -1.0, 1.0, 0,
-  -1.0, -1.0, 0,
-  -1.0, -1.0, 0,
-  1.0, -1.0, 0,
-  1.0, 1.0, 0
-]
-*/
 const components = 2
 const verts = [
   -1, -1,
@@ -138,10 +129,11 @@ function step (gl, stepBuffer, frontTexture, backTexture, sizeX, sizeY, program)
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, stepBuffer)
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, backTexture, 0)
-  gl.viewport(0, 0, sizeX, sizeY)
 
   gl.activeTexture(gl.TEXTURE0)
   gl.bindTexture(gl.TEXTURE_2D, frontTexture)
+
+  gl.viewport(0, 0, sizeX, sizeY)
 
   const state = gl.getUniformLocation(program, 'state')
   gl.uniform1i(state, 0)
@@ -149,20 +141,25 @@ function step (gl, stepBuffer, frontTexture, backTexture, sizeX, sizeY, program)
   drawQuad(gl, program)
 }
 
-function setRandom (gl, texture, sizeX, sizeY) {
+function getRandomCells (sizeX, sizeY) {
   const source = new Uint8Array(sizeX * sizeY * 4)
   for (let i = 0; i < sizeX * sizeY; ++i) {
     let pixi = i * 4
-    source[pixi] = source[pixi + 1] = source[pixi + 2] = Math.random() < 0.5 ? 255 : 0
+    source[pixi] = source[pixi + 1] = source[pixi + 2] = Math.random() < 0.1 ? 255 : 0
     source[pixi + 3] = 255
   }
 
-  console.log('initial:', source)
+  return source
+}
+
+function setRandom (gl, texture, sizeX, sizeY) {
+  const source = getRandomCells(sizeX, sizeY)
+
   gl.bindTexture(gl.TEXTURE_2D, texture)
   gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, sizeX, sizeY, gl.RGBA, gl.UNSIGNED_BYTE, source)
 }
 
-function main () {
+async function main () {
   const canvas = document.querySelector('#glCanvas')
   const sizeX = canvas.width
   const sizeY = canvas.height
@@ -183,39 +180,44 @@ function main () {
   gl.attachShader(program, createShader(gl, fragment_shader, gl.FRAGMENT_SHADER))
   gl.linkProgram(program)
 
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    throw new Error(gl.getProgramInfoLog(program))
+  }
+
   // copy program for rendering
   const copyProgram = gl.createProgram()
   gl.attachShader(copyProgram, createShader(gl, vertex_shader, gl.VERTEX_SHADER))
-  gl.attachShader(copyProgram, createShader(gl, fragment_shader_copy, gl.FRAGMENT_SHADER))
+  gl.attachShader(copyProgram, createShader(gl, fragment_shader, gl.FRAGMENT_SHADER))
   gl.linkProgram(copyProgram)
 
-  gl.clearColor(0, 1, 0, 1)
-  gl.enable(gl.DEPTH_TEST)
+  if (!gl.getProgramParameter(copyProgram, gl.LINK_STATUS)) {
+    throw new Error(gl.getProgramInfoLog(copyProgram))
+  }
+
+  gl.clearColor(0, 0, 0, 1)
+  gl.disable(gl.DEPTH_TEST)
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
-  gl.viewport(0, 0, sizeX, sizeY)
 
   const stepBuffer = gl.createFramebuffer()
 
   setRandom(gl, frontTexture, sizeX, sizeY)
-  // setRandom(gl, backTexture, sizeX, sizeY)
 
-  for (let i = 0; i < 1; ++i) {
-    console.log('running step')
+  let frames = 0
+  setInterval(() => {
+    document.querySelector('#fps').innerText = frames
+    frames = 0
+  }, 1000)
+
+  while (true) {
     step(gl, stepBuffer, frontTexture, backTexture, sizeX, sizeY, program)
     const tmp = frontTexture
     frontTexture = backTexture
     backTexture = tmp
+
+    drawState(gl, sizeX, sizeY, frontTexture, copyProgram)
+    frames++
+    await new Promise(resolve => setTimeout(resolve, 0))
   }
-
-  console.log('drawing state')
-  drawState(gl, sizeX, sizeY, frontTexture, copyProgram)
-
-  // read output to see what happened
-  const finalState = new Uint8Array(sizeX * sizeY * 4)
-  gl.bindFramebuffer(gl.FRAMEBUFFER, stepBuffer)
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, frontTexture, 0)
-  gl.readPixels(0, 0, sizeX, sizeY, gl.RGBA, gl.UNSIGNED_BYTE, finalState)
-  console.log('final:', finalState)
 }
 
 window.addEventListener('load', main)
